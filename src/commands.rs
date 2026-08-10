@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
+use std::io::{self, Write};
 
 #[derive(Parser)]
+#[command(name = "llm-cli")]
 pub struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -8,25 +10,20 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    Ask { prompt: String },
-    Version,
-    Models,
+    Ask,
 }
 
-pub fn parse_commands() -> Result<String, Box<dyn std::error::Error>> {
+pub fn parse_commands() -> Result<Commands, Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Ask { prompt } => {
-            Ok(prompt.to_string())
-        }
+    Ok(cli.command)
+}
 
-        Commands::Version => {
-            Ok("v1.0".to_string())
-        }
+pub fn read_prompt() -> Result<String, Box<dyn std::error::Error>> {
+    print!("You: " );
+    io::stdout().flush()?;
+    let mut input = String::new();
 
-        Commands::Models => {
-            Ok("listing models...".to_string())
-        }
-    }
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
 }

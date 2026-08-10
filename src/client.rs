@@ -1,18 +1,13 @@
-use crate::models::ChatResponse;
+use crate::models::{ChatResponse, Message};
 use reqwest::blocking::Client;
 use serde_json::json;
 
-pub fn ask(api_key: &str, prompt: &str) -> Result<ChatResponse, Box<dyn std::error::Error>> {
+pub fn ask(api_key: &str, history: &[Message]) -> Result<ChatResponse, Box<dyn std::error::Error>> {
     let client = Client::new();
 
     let payload = json!({
         "model": "openrouter/free",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt.trim()
-            }
-        ]
+        "messages": history,
     });
 
     let chat: ChatResponse = client
