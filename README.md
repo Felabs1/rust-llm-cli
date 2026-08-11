@@ -13,23 +13,40 @@ OPENROUTER_API_KEY=your_key_here
 ## Usage
 
 ```bash
-cargo run -- ask "what is AI"
+cargo run -- ask
 ```
 
-The reply is printed along with the finish reason, response id, and model.
+`ask` starts an interactive chat loop. It prompts with `You: `, prints the
+model's reply as `AI: ...`, and keeps going until you type `exit`.
+
+```
+You: what is AI
+AI: ...
+History: 2 messages, ~12 tokens
+You: exit
+```
+
+The full conversation is sent to the model on each turn, so it has context from
+earlier messages. After every turn the CLI prints how many messages the history
+holds and a rough token estimate.
+
+### History truncation
+
+Tokens are estimated as `content.len() / 4` per message. When the history
+exceeds `MAX_TOKENS` (50, in [src/main.rs](src/main.rs)), the oldest
+user/assistant pair is dropped, repeating until the history fits or only one
+turn remains.
 
 ### Commands
 
 | Command | Description |
 | --- | --- |
-| `ask <prompt>` | Send a prompt to the model |
-| `version` | Print the CLI version *(stub — still routed to the model)* |
-| `models` | List available models *(stub — still routed to the model)* |
+| `ask` | Start the interactive chat loop |
 
 ## Layout
 
-- [src/main.rs](src/main.rs) — entry point, wires config → command → client
-- [src/commands.rs](src/commands.rs) — clap CLI definition
+- [src/main.rs](src/main.rs) — entry point, chat loop, history truncation
+- [src/commands.rs](src/commands.rs) — clap CLI definition and stdin prompt reader
 - [src/config.rs](src/config.rs) — loads `OPENROUTER_API_KEY` from `.env`
-- [src/client.rs](src/client.rs) — blocking HTTP call to OpenRouter
-- [src/models.rs](src/models.rs) — response types
+- [src/client.rs](src/client.rs) — blocking HTTP call to OpenRouter, sends the message history
+- [src/models.rs](src/models.rs) — request/response types

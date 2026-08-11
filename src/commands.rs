@@ -20,7 +20,7 @@ pub fn parse_commands() -> Result<Commands, Box<dyn std::error::Error>> {
 }
 
 pub fn read_prompt() -> Result<String, Box<dyn std::error::Error>> {
-    print!("You: " );
+    print!("You: ");
     io::stdout().flush()?;
     let mut input = String::new();
 
