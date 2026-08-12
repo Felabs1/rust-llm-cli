@@ -35,7 +35,12 @@ holds and a rough token estimate.
 Tokens are estimated as `content.len() / 4` per message. When the history
 exceeds `MAX_TOKENS` (50, in [src/main.rs](src/main.rs)), the oldest
 user/assistant pair is dropped, repeating until the history fits or only one
-turn remains.
+turn remains. This runs twice per turn: once after the prompt is appended, so
+the outgoing request is already within budget, and once after the reply.
+
+At the current cap of 50 tokens (~200 characters), the history is trimmed back
+to a single turn almost immediately — raise `MAX_TOKENS` if you want the model
+to see more than the previous exchange.
 
 ### Commands
 
