@@ -1,23 +1,63 @@
-use crate::models::{ChatResponse, Message};
+use crate::models::{Message, StreamResponse};
 use reqwest::blocking::Client;
 use serde_json::json;
+use std::io::Read;
 
-pub fn ask(api_key: &str, history: &[Message]) -> Result<ChatResponse, Box<dyn std::error::Error>> {
+pub fn ask(api_key: &str, history: &[Message]) -> Result<String, Box<dyn std::error::Error>> {
     let client = Client::new();
 
     let payload = json!({
         "model": "openrouter/free",
         "messages": history,
+        "stream": true,
     });
 
-    let chat: ChatResponse = client
+    let mut response = client
         .post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()?
-        .error_for_status()?
-        .json()?;
+        .error_for_status()?;
 
-    Ok(chat)
+    let mut buffer = [0u8; 1024];
+    let mut stream_buffer = String::new();
+    let mut full_response = String::new();
+
+    loop {
+        let bytes_read = response.read(&mut buffer)?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+        stream_buffer.push_str(&chunk);
+
+        while let Some(position) = stream_buffer.find('\n') {
+            let line = stream_buffer[..position].trim_end_matches('\r').to_string();
+            stream_buffer.drain(..=position);
+            if line.is_empty() {
+                continue;
+            }
+
+            if line == "data: [DONE]" {
+                break;
+            }
+
+            if let Some(json_data) = line.strip_prefix("data: ") {
+                let chunk: StreamResponse = serde_json::from_str(json_data)?;
+                let choice = chunk.choices.first();
+                if let Some(choice) = choice {
+                    if let Some(content) = &choice.delta.content {
+                        print!("{content}");
+                        full_response.push_str(content);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(full_response)
 }

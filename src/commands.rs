@@ -10,7 +10,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    Ask,
+    Ask { prompt: String },
 }
 
 pub fn parse_commands() -> Result<Commands, Box<dyn std::error::Error>> {

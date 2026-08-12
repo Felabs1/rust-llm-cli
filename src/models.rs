@@ -19,3 +19,18 @@ pub struct Message {
     pub role: String,
     pub content: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct StreamResponse {
+    pub choices: Vec<StreamChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamChoice {
+    pub delta: StreamDelta,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamDelta {
+    pub content: Option<String>,
+}

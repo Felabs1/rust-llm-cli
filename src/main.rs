@@ -26,8 +26,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = commands::parse_commands()?;
 
     match command {
-        commands::Commands::Ask => {
+        commands::Commands::Ask { prompt } => {
             let mut history: Vec<Message> = Vec::new();
+
+            let user_message = Message {
+                role: "user".to_string(),
+                content: prompt,
+            };
+
+            history.push(user_message);
+
+            truncate_history(&mut history, MAX_TOKENS);
+
+            let reply = client::ask(&api_key, &history)?;
+
+            println!("\n\nComplete response");
+            println!("{reply}");
+            history.push(Message {
+                role: "assistant".to_string(),
+                content: reply,
+            });
 
             loop {
                 let prompt = commands::read_prompt()?;
@@ -47,30 +65,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let reply = client::ask(&api_key, &history)?;
 
-                let assistant_content = reply
-                    .choices
-                    .into_iter()
-                    .next()
-                    .ok_or("Api returned no choices")?
-                    .message
-                    .content;
-
-                let assistant_message = Message {
+                println!("\n\nComplete response: ");
+                println!("{reply}");
+                history.push(Message {
                     role: "assistant".to_string(),
-                    content: assistant_content,
-                };
-
-                println!("AI: {}", assistant_message.content);
-
-                history.push(assistant_message);
-
-                truncate_history(&mut history, MAX_TOKENS);
-
-                println!(
-                    "History: {} messages, ~{} tokens",
-                    history.len(),
-                    estimate_tokens(&history)
-                );
+                    content: reply,
+                });
             }
         }
     }
