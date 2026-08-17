@@ -14,7 +14,7 @@ pub struct Choice {
     pub finish_reason: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Hash, PartialEq, Eq, Clone)]
 pub struct Message {
     pub role: String,
     pub content: String,
@@ -43,7 +43,7 @@ pub struct Pricing {
     pub output_per_million: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
