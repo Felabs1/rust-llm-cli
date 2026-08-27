@@ -16,7 +16,6 @@ const MAX_TOKENS: usize = 500;
 
 type ResponseCache = HashMap<u64, (String, Option<Usage>)>;
 
-
 fn ask_with_cache(
     cache: &mut HashMap<u64, (String, Option<Usage>)>,
     api_key: &str,
@@ -94,6 +93,29 @@ fn print_history(history: &[Message]) {
     println!("\n----------------------------\n")
 }
 
+fn is_safe_prompt(prompt: &str) -> bool {
+    let banned_phrases = [
+        "ignore previous instructions",
+        "ignore all previous",
+        "disregard prior",
+        "system prompt",
+        "reveal your instructions",
+        "you are now dan",
+        "do anything now",
+        "strive to avoid norms",
+    ];
+
+    let lower = prompt.to_lowercase();
+
+    for phrase in banned_phrases.iter() {
+        if lower.contains(phrase) {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cache: ResponseCache = HashMap::new();
     let api_key = config::api_key()?;
@@ -107,6 +129,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 role: "system".to_string(),
                 content: system_prompt,
             }];
+
+            let mut redo_stack: Vec<Message> = Vec::new();
 
             let user_message = Message {
                 role: "user".to_string(),
@@ -128,11 +152,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n\nComplete response");
             println!("{reply}");
 
-            println!("\n---------usage----------");
-            println!("estimated input tokens: {input_tokens}");
-            println!("estimated output tokens: {output_tokens}");
-            println!("estimated total tokens: {total_tokens}");
-            println!("estimated cost: ${total_cost:.8}");
+            // println!("\n---------usage----------");
+            // println!("estimated input tokens: {input_tokens}");
+            // println!("estimated output tokens: {output_tokens}");
+            // println!("estimated total tokens: {total_tokens}");
+            // println!("estimated cost: ${total_cost:.8}");
 
             println!("pricing model: {}", pricing.model);
             println!(
@@ -144,12 +168,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             );
 
-            if let Some(usage) = &usage {
-                println!("\n---------provider usage----------");
-                println!("actual input tokens: {}", usage.prompt_tokens);
-                println!("actual output tokens: {}", usage.completion_tokens);
-                println!("actual total tokens: {}", usage.total_tokens);
-            }
+            // if let Some(usage) = &usage {
+            //     println!("\n---------provider usage----------");
+            //     println!("actual input tokens: {}", usage.prompt_tokens);
+            //     println!("actual output tokens: {}", usage.completion_tokens);
+            //     println!("actual total tokens: {}", usage.total_tokens);
+            // }
 
             history.push(Message {
                 role: "assistant".to_string(),
@@ -163,6 +187,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if prompt.eq_ignore_ascii_case("exit") {
                     break;
+                }
+
+                if !is_safe_prompt(&prompt) {
+                    println!("\n BLOCKED: Prompt injection detected.\n");
+                    continue;
+                }
+
+                if prompt.eq_ignore_ascii_case("undo") {
+                    // handle undo logic
+                    if history.len() >= 3 {
+                        // pop assistant first if it's on top
+                        if let Some(assistant_msg) = history.pop() {
+                            if let Some(user_msg) = history.pop() {
+                                // push them onto redo_stack (assistant first, then user)
+                                redo_stack.push(assistant_msg);
+                                redo_stack.push(user_msg);
+                                println!("undid last turn");
+                            } else {
+                                history.push(assistant_msg);
+                                println!("nothing to undo");
+                            }
+                        }
+                    } else {
+                        println!("Nothing to undo.");
+                    }
+                    print_history(&history);
+
+                    continue;
+
+
+                }
+
+                if prompt.eq_ignore_ascii_case("redo") {
+                    if redo_stack.len() >= 2 {
+                        // popo user first (since is't on top of the redo stack)
+                        if let Some(user_msg) = redo_stack.pop() {
+                            // pop assistant next
+                            if let Some(assistant_msg) = redo_stack.pop() {
+                                // push them back on to history (user first, then assistant)
+                                history.push(user_msg);
+                                history.push(assistant_msg);
+                                println!("REdid last turn.");
+                            } else {
+                                // edge case: put user back if assistant pop failed
+                                redo_stack.push(user_msg);
+                                println!("nothing to redo");
+                            }
+                        }
+                    } else {
+                        println!("Nothing to redo.");
+                    }
+
+                    print_history(&history);
+
+
+                    continue;
                 }
 
                 if prompt.eq_ignore_ascii_case("cache-test") {
@@ -189,8 +269,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Same response? {}", first_reply == second_reply);
                     println!("Second reply: {second_reply}");
 
+
+
                     continue;
                 }
+
+                redo_stack.clear();
 
                 let user_message = Message {
                     role: "user".to_string(),
@@ -212,14 +296,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let (total_cost, used_actual_usage) =
                     calculate_cost(usage.as_ref(), input_tokens, output_tokens, &pricing);
 
-                println!("\n\nComplete response: ");
-                println!("{reply}");
+                // println!("\n\nComplete response: ");
+                // println!("{reply}");
 
-                println!("\n---------usage----------");
-                println!("estimated input tokens: {input_tokens}");
-                println!("estimated output tokens: {output_tokens}");
-                println!("estimated total tokens: {total_tokens}");
-                println!("estimated cost: ${total_cost:.8}");
+                // println!("\n---------usage----------");
+                // println!("estimated input tokens: {input_tokens}");
+                // println!("estimated output tokens: {output_tokens}");
+                // println!("estimated total tokens: {total_tokens}");
+                // println!("estimated cost: ${total_cost:.8}");
 
                 println!(
                     "cost source: {}",
@@ -230,19 +314,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 );
 
-                if let Some(usage) = &usage {
-                    println!("\n---------provider usage----------");
-                    println!("actual input tokens: {}", usage.prompt_tokens);
-                    println!("actual output tokens: {}", usage.completion_tokens);
-                    println!("actual total tokens: {}", usage.total_tokens);
-                }
+                // if let Some(usage) = &usage {
+                //     println!("\n---------provider usage----------");
+                //     println!("actual input tokens: {}", usage.prompt_tokens);
+                //     println!("actual output tokens: {}", usage.completion_tokens);
+                //     println!("actual total tokens: {}", usage.total_tokens);
+                // }
 
                 history.push(Message {
                     role: "assistant".to_string(),
                     content: reply,
                 });
 
-                // print_history(&history);
+                print_history(&history);
             }
         }
     }
