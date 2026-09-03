@@ -5,17 +5,19 @@ mod config;
 mod cost;
 mod history;
 mod models;
+mod ollama;
 mod safety;
 
 use cache::{ResponseCache, ask_with_cache};
+use client::{LanguageModel, OpenRouterClient};
 use cost::{calculate_cost, estimate_cost};
 use history::{estimate_tokens, print_history, truncate_history};
 use models::Message;
 use models::Pricing;
 use models::Usage;
+use ollama::OllamaClient;
 use safety::is_safe_prompt;
 use std::collections::HashMap;
-use client::{LanguageModel, OpenRouterClient};
 
 const MAX_TOKENS: usize = 500;
 
@@ -24,6 +26,7 @@ fn process_turn<M: LanguageModel>(
     cache: &mut ResponseCache,
     api_key: &str,
     pricing: &Pricing,
+    model: &str,
     history: &mut Vec<Message>,
     prompt: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -39,7 +42,7 @@ fn process_turn<M: LanguageModel>(
 
     // 3. Estimate tokens and call API (via cache)
     let input_tokens = history::estimate_tokens(history);
-    let (reply, usage) = ask_with_cache(client, cache, api_key, &pricing.model, history)?;
+    let (reply, usage) = ask_with_cache(client, cache, api_key, model, history)?;
 
     // 4. Calculate usage and cost
     let output_tokens = reply.len() / 4;
@@ -82,7 +85,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let llm = OpenRouterClient;
 
     match cli.command {
-        commands::Commands::Ask { prompt } => {
+        commands::Commands::Ask { prompt, model } => {
+            let effective_model = model.unwrap_or_else(|| pricing.model.clone());
             let mut history: Vec<Message> = vec![Message {
                 role: "system".to_string(),
                 content: system_prompt,
@@ -90,7 +94,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut redo_stack: Vec<Message> = Vec::new();
 
-            process_turn(&llm, &mut cache, &api_key, &pricing, &mut history, prompt)?;
+            process_turn(
+                &llm,
+                &mut cache,
+                &api_key,
+                &pricing,
+                &effective_model,
+                &mut history,
+                prompt,
+            )?;
 
             // print_history(&history);
 
@@ -183,7 +195,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 redo_stack.clear();
 
-                process_turn(&llm, &mut cache, &api_key, &pricing, &mut history, prompt)?;
+                process_turn(
+                    &llm,
+                    &mut cache,
+                    &api_key,
+                    &pricing,
+                    &effective_model,
+                    &mut history,
+                    prompt,
+                )?;
             }
         }
     }

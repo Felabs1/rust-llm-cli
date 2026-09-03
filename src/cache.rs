@@ -46,14 +46,14 @@ mod tests {
     struct MockClient;
 
     impl LanguageModel for MockClient {
-       fn ask(
-        &self,
-        _api_key: &str,
-        _model: &str,
-        _messages: &[Message],
-       ) -> Result<(String, Option<Usage>), Box<dyn std::error::Error>> {
-        Ok(("This is a fake mocked response.".to_string(), None))
-       }
+        fn ask(
+            &self,
+            _api_key: &str,
+            _model: &str,
+            _messages: &[Message],
+        ) -> Result<(String, Option<Usage>), Box<dyn std::error::Error>> {
+            Ok(("This is a fake mocked response.".to_string(), None))
+        }
     }
 
     // 3. Test the cache using the MockClient
@@ -61,21 +61,22 @@ mod tests {
     fn cache_returns_stored_response_on_second_call() {
         let mut cache = HashMap::new();
         let client = MockClient;
-        
+
         let history = vec![Message {
             role: "user".to_string(),
             content: "hello".to_string(),
         }];
 
         // First call: cache miss, hits the mock
-        let (reply1, _) = ask_with_cache(&client, &mut cache, "fake_key", "fake_model", &history).unwrap();
+        let (reply1, _) =
+            ask_with_cache(&client, &mut cache, "fake_key", "fake_model", &history).unwrap();
         assert_eq!(reply1, "This is a fake mocked response.");
         assert_eq!(cache.len(), 1); // Cache now has 1 item
 
         // Second call: cache hit, returns stored value WITHOUT calling the mock
-        let (reply2, _) = ask_with_cache(&client, &mut cache, "fake_key", "fake_model", &history).unwrap();
+        let (reply2, _) =
+            ask_with_cache(&client, &mut cache, "fake_key", "fake_model", &history).unwrap();
         assert_eq!(reply2, "This is a fake mocked response.");
         assert_eq!(cache.len(), 1); // Cache STILL has exactly 1 item
     }
-
 }

@@ -12,7 +12,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    Ask { prompt: String },
+    Ask {
+        prompt: String,
+        #[arg(short, long)]
+        model: Option<String>,
+    },
 }
 
 pub fn parse_commands() -> Result<Cli, Box<dyn std::error::Error>> {

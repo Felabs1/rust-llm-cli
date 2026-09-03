@@ -2,6 +2,7 @@ use crate::models::{Message, StreamResponse, Usage};
 use reqwest::blocking::Client;
 use serde_json::json;
 use std::io::Read;
+use std::time::Instant;
 
 pub trait LanguageModel {
     fn ask(
@@ -31,6 +32,9 @@ impl LanguageModel for OpenRouterClient {
                 "include": true,
             }
         });
+
+        let start_time = Instant::now();
+        let mut first_token_time: Option<Instant> = None;
 
         let mut response = client
             .post("https://openrouter.ai/api/v1/chat/completions")
@@ -77,6 +81,9 @@ impl LanguageModel for OpenRouterClient {
                     let choice = chunk.choices.first();
                     if let Some(choice) = choice {
                         if let Some(content) = &choice.delta.content {
+                            if first_token_time.is_none() {
+                                first_token_time = Some(Instant::now());
+                            }
                             print!("{content}");
                             full_response.push_str(content);
                         }
@@ -84,6 +91,25 @@ impl LanguageModel for OpenRouterClient {
                 }
             }
         }
+
+        let total_time = start_time.elapsed();
+        let ttft = first_token_time
+            .unwrap_or(start_time)
+            .duration_since(start_time);
+
+        let tokens_generated = usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0);
+        let generation_time = total_time.saturating_sub(ttft);
+        let tps = if generation_time.as_secs_f64() > 0.0 {
+            tokens_generated as f64 / generation_time.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        println!("\n⏱️  Performance Metrics (API - OpenRouter):");
+        println!("  Time to first token:  {:.3}s", ttft.as_secs_f64());
+        println!("  Tokens generated:     {}", tokens_generated);
+        println!("  Tokens per second:    {:.1} tok/s", tps);
+        println!("  Total time:           {:.3}s", total_time.as_secs_f64());
 
         Ok((full_response, usage))
     }
