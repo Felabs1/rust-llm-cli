@@ -1,18 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Deserialize)]
-pub struct ChatResponse {
-    pub id: String,
-    pub model: String,
-    pub choices: Vec<Choice>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Choice {
-    pub message: Message,
-    pub finish_reason: String,
-}
 
 #[derive(Debug, Deserialize, Serialize, Hash, PartialEq, Eq, Clone)]
 pub struct Message {
@@ -47,5 +35,6 @@ pub struct Pricing {
 pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
+    #[allow(dead_code)]
     pub total_tokens: usize,
 }

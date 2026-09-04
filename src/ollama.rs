@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::client::LanguageModel; // ← ONLY the trait. Not OpenRouterClient.
 use crate::models::{Message, Usage};
 use reqwest::blocking::Client;
@@ -39,7 +40,7 @@ impl LanguageModel for OllamaClient {
         });
 
         let start_time = Instant::now();
-        let mut first_token_time: Option<Instant> = None;
+        let first_token_time: Option<Instant> = None;
 
         let mut response = client
             .post("http://localhost:11434/api/chat")
