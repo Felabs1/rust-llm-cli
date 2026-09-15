@@ -29,6 +29,17 @@ pub enum Commands {
     },
 
     Bench,
+
+    Setup {
+        name: String,
+    },
+
+    Index {
+        #[arg(short, long, default_value = "embeddings.json")]
+        file: String,
+    }
+
+
 }
 
 pub fn parse_commands() -> Result<Cli, Box<dyn std::error::Error>> {

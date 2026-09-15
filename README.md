@@ -2,7 +2,7 @@
 
 A modular command-line LLM client written in Rust, backed by either the [OpenRouter](https://openrouter.ai) API or a local [Ollama](https://ollama.com) instance.
 
-Alongside the chat client it ships an embeddings toolkit: generate a vector for a string, ingest a text file into paragraph chunks, and benchmark remote versus local embedding models by cosine similarity.
+Alongside the chat client it ships an embeddings toolkit: generate a vector for a string, ingest a text file into paragraph chunks, benchmark remote versus local embedding models by cosine similarity, and persist the results to a [Qdrant](https://qdrant.tech) vector store running in Docker.
 
 ## Architecture
 
@@ -12,6 +12,7 @@ graph TB
     main --> cmdmod[commands.rs]
     main --> chatloop[Chat Loop]
     main --> embcmds["embed · ingest · bench"]
+    main --> vdbcmds["setup · index"]
 
     config --> envfile[".env"]
     config --> pricingfile["pricing.json"]
@@ -33,6 +34,14 @@ graph TB
     benchfn --> cosine
     benchfn --> localemb["ollama.rs · get_local_embedding()"]
     localemb --> ollamaembapi["localhost:11434/api/embeddings · nomic-embed-text"]
+
+    vdbcmds --> qdrantmod["qdrant.rs"]
+    qdrantmod --> createcoll["create_collection()"]
+    qdrantmod --> insertpts["insert_points()"]
+    embjson --> insertpts
+    createcoll --> qdrantapi["localhost:6333 · Qdrant REST API"]
+    insertpts --> qdrantapi
+    qdrantapi --> compose["docker-compose.yml · qdrant/qdrant"]
 
     chatloop --> readprompt
     chatloop --> specials["undo · redo · cache-test · exit"]
@@ -88,6 +97,14 @@ graph TB
         localemb
     end
 
+    subgraph vectorstore [Vector Store]
+        qdrantmod
+        createcoll
+        insertpts
+        qdrantapi
+        compose
+    end
+
     subgraph backends [LLM Backends]
         or
         ollama
@@ -107,6 +124,7 @@ graph TB
 | `client.rs` | `LanguageModel` trait + `OpenRouterClient` |
 | `ollama.rs` | `OllamaClient` implementing `LanguageModel`, plus `get_local_embedding()` |
 | `embeddings.rs` | Embedding generation, paragraph chunking, file ingestion, cosine similarity, model benchmarking |
+| `qdrant.rs` | Qdrant REST client: `create_collection()` and `insert_points()` |
 | `cache.rs` | In-memory response cache keyed by conversation hash |
 | `cost.rs` | Cost estimation from token counts or provider usage |
 | `history.rs` | Token estimation (`len/4`) + history truncation |
@@ -150,9 +168,29 @@ Chatting through Ollama is implemented (`OllamaClient` in `ollama.rs`) but not w
 ollama pull llama3.2
 ```
 
+### Qdrant
+
+`setup` and `index` talk to Qdrant's REST API on `http://localhost:6333`. `docker-compose.yml` defines the server:
+
+```bash
+docker compose up -d
+```
+
+| Setting | Value |
+|---|---|
+| Image | `qdrant/qdrant:latest` |
+| Container name | `mango-qdrant` |
+| Ports | `6333` (REST), `6334` (gRPC) |
+| Volume | `qdrant_storage` → `/qdrant/storage`, so indexed points survive restarts |
+| Restart policy | `unless-stopped` |
+
+`docker compose stop` halts it. `docker compose down` removes the container but keeps the named volume — add `-v` to delete the indexed points as well.
+
+> **Note:** `container_name` is pinned to `mango-qdrant`, so only one copy of this stack can run at a time. If a `mango-qdrant` container already exists — for example started from another checkout of the same compose file — `docker compose up -d` here fails with a name conflict. Volumes are also project-scoped (`<project>_qdrant_storage`), so a second project starts with an empty database instead of seeing the first one's collections.
+
 ### Shared startup requirements
 
-`main()` loads `.env`, `pricing.json`, and the system prompt before dispatching any subcommand, so `embed`, `ingest`, and `bench` still require `OPENROUTER_API_KEY` plus both files to be present even though they never send a chat request.
+`main()` loads `.env`, `pricing.json`, and the system prompt before dispatching any subcommand, so `embed`, `ingest`, `bench`, `setup`, and `index` all still require `OPENROUTER_API_KEY` plus both files to be present even though they never send a chat request. `setup` and `index` additionally need Qdrant reachable on port `6333`.
 
 ## Usage
 
@@ -288,6 +326,66 @@ Ranks three built-in sample documents against the query `"How to fix a flat tire
 
 Scoring uses `cosine_similarity()`, which returns `0.0` for mismatched-length or zero-magnitude vectors rather than producing `NaN`.
 
+## Vector store
+
+`ingest` leaves embeddings in a JSON file. `setup` and `index` push them into Qdrant, where they persist across runs:
+
+```
+ingest <file>  →  embeddings.json  →  index  →  Qdrant collection
+                     setup <name> creates the collection first
+```
+
+### 1. Create a collection
+
+```bash
+cargo run -- setup my_notes
+```
+
+```
+🚀 Setting up Qdrant collection: my_notes
+✅ Collection 'my_notes' created successfully.
+```
+
+`create_collection()` issues `PUT /collections/{name}` with `{"vectors": {"size": 1536, "distance": "Cosine"}}`. The size is hardcoded to **1536** at the call site in `main.rs` to match `text-embedding-3-small`; indexing vectors from a different embedding model means changing that value.
+
+### 2. Index the embeddings
+
+```bash
+cargo run -- index
+cargo run -- index --file notes.json
+```
+
+```
+📖 Reading embeddings from embeddings.json...
+🚀 Pushing 3 points to Qdrant...
+✅ Successfully indexed 3 points into 'my_notes'
+```
+
+It reads `embeddings.json` by default (`-f` / `--file` to override) and expects the `{ data, vector }` shape that `ingest` writes. Each entry becomes one point:
+
+```json
+{ "id": 1, "vector": [-0.0070724487, 0.03201294, ...], "payload": { "text": "Rust is a multi-paradigm..." } }
+```
+
+Two behaviours worth knowing:
+
+- The target collection is **hardcoded to `my_notes`** in `main.rs`. `index` ignores whatever name you gave `setup`, so the default path only works if you ran `cargo run -- setup my_notes`.
+- IDs are the 1-based position of the chunk in the file, and `PUT /collections/{name}/points` upserts. Indexing a different file into the same collection silently overwrites the points whose IDs collide.
+
+### Inspecting a collection
+
+There is no `search` subcommand yet — the CLI can write to Qdrant but not query it. Use the REST API directly:
+
+```bash
+# config, status, and point count
+curl http://localhost:6333/collections/my_notes
+
+# first stored point with its payload
+curl -X POST http://localhost:6333/collections/my_notes/points/scroll \
+  -H 'Content-Type: application/json' \
+  -d '{"limit": 1, "with_payload": true, "with_vector": false}'
+```
+
 ## Commands
 
 ### Subcommands
@@ -300,6 +398,9 @@ Scoring uses `cosine_similarity()`, which returns `0.0` for mismatched-length or
 | `ingest <file>` | Chunk a file by paragraph, embed each chunk, write JSON |
 | `ingest <file> -o <path>` | Same, writing somewhere other than the default `embeddings.json` |
 | `bench` | Rank sample documents against a fixed query using both OpenRouter and local Ollama embeddings |
+| `setup <name>` | Create a Qdrant collection — 1536 dimensions, cosine distance |
+| `index` | Push `embeddings.json` into the `my_notes` collection |
+| `index -f <path>` | Same, reading a different embeddings file |
 
 Global flag: `--system-prompt <path>`, default `system_prompt.txt`. It belongs to the top-level command, so it must precede the subcommand.
 
@@ -331,6 +432,7 @@ Anything else is sent to the model as the next turn — after passing the inject
 - **Generic payloads** — `Embedding<T>` holds any serializable type, not just plain chunk strings
 - **Cosine similarity** — `NaN`-safe scoring that returns `0.0` on mismatched or zero-magnitude vectors
 - **Remote vs local benchmarking** — `bench` ranks the same documents with OpenRouter and Ollama `nomic-embed-text` side by side
+- **Persistent vector store** — Qdrant runs from `docker-compose.yml` behind a named volume; `setup` creates a cosine-distance collection and `index` upserts the ingested chunks into it
 
 ## Testing
 
@@ -340,22 +442,26 @@ cargo test
 
 18 unit tests covering token estimation and truncation (`history`), cost calculation (`cost`), the injection guardrail (`safety`), cache hits with a mock client (`cache`), and cosine similarity plus the generic `Embedding<T>` (`embeddings`).
 
+The network-facing code — `client`, `ollama`, the embedding API calls, and `qdrant` — has no test coverage; only `cache` is exercised offline, via a mock `LanguageModel`.
+
 ## Layout
 
 ```
 llm-cli/
 ├── Cargo.toml
+├── docker-compose.yml   # Qdrant server, ports 6333 + 6334
 ├── pricing.json         # model + $/million tokens
 ├── system_prompt.txt    # system prompt
 ├── custom_prompt.txt    # optional alternative
 ├── test_notes.txt       # sample input for `ingest`
-├── embeddings.json      # generated by `ingest`
+├── embeddings.json      # generated by `ingest`, consumed by `index`
 ├── .env                 # OPENROUTER_API_KEY (not committed)
 └── src/
     ├── main.rs
     ├── client.rs        # LanguageModel trait + OpenRouterClient
     ├── ollama.rs        # OllamaClient + get_local_embedding()
     ├── embeddings.rs    # embed, chunk, ingest, cosine similarity, bench
+    ├── qdrant.rs        # create_collection() + insert_points()
     ├── cache.rs         # ask_with_cache<M>()
     ├── cost.rs          # estimate / calculate cost
     ├── history.rs       # token estimate + truncate

@@ -8,6 +8,7 @@ mod history;
 mod models;
 mod ollama;
 mod safety;
+mod qdrant;
 
 use cache::{ResponseCache, ask_with_cache};
 use client::{LanguageModel, OpenRouterClient};
@@ -242,6 +243,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ];
             
             embeddings::benchmark_models(&api_key, query, &docs)?;
+        }
+
+        commands::Commands::Setup {name} =>  {
+            println!("🚀 Setting up Qdrant collection: {}", name);
+            // Call the function we wrote in qdrant.rs!
+            // We pass the name, and 1536 (the size of OpenRouter's embeddings)
+            qdrant::create_collection(&name, 1536)?;
+        }
+
+        commands::Commands::Index { file } => {
+            qdrant::insert_points(&file, "my_notes")?;
         }
     }
 
