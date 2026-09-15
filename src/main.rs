@@ -3,6 +3,7 @@ mod client;
 mod commands;
 mod config;
 mod cost;
+mod embeddings;
 mod history;
 mod models;
 mod ollama;
@@ -10,10 +11,12 @@ mod safety;
 
 use cache::{ResponseCache, ask_with_cache};
 use client::{LanguageModel, OpenRouterClient};
-use cost::calculate_cost;
-use history::print_history;
+use cost::{calculate_cost, estimate_cost};
+use history::{estimate_tokens, print_history, truncate_history};
 use models::Message;
 use models::Pricing;
+use models::Usage;
+use ollama::OllamaClient;
 use safety::is_safe_prompt;
 use std::collections::HashMap;
 
@@ -204,21 +207,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
         }
+
+        commands::Commands::Embed { text } => {
+            println!("🧠 Generating embedding for: \"{}\"", text);
+
+            // Call the function we built in Step 2 & 3
+            match embeddings::get_embedding(&api_key, &text) {
+                Ok(vector) => {
+                    // 1. Print the "shape" (how many numbers are in the list?)
+                    println!("Success! Shape (dimensions): {}", vector.len());
+
+                    let preview: Vec<String> =
+                        vector.iter().take(5).map(|n| format!("{:4}", n)).collect();
+                    println!("First 5 numbers: [{}]", preview.join(", "));
+                }
+                Err(e) => {
+                    eprintln!("Error getting embedding: {}", e);
+                }
+            }
+        }
+
+        commands::Commands::Ingest { file_path, output } => {
+            println!("🚀 Starting ingestion of file: {}", file_path);
+            // Call the master function we built in Step 5!
+            embeddings::ingest_file(&api_key, &file_path, &output)?;
+        }
+
+        commands::Commands::Bench => {
+            let query = "How to fix a flat tire";
+            let docs = [
+                "The recipe for chocolate cake requires flour and sugar.", // Irrelevant
+                "Bicycles also have tires that can go flat, requiring a patch kit.", // Somewhat relevant
+                "To change a tire, use a jack to lift the car and a lug wrench to remove the nuts.", // Highly relevant
+            ];
+            
+            embeddings::benchmark_models(&api_key, query, &docs)?;
+        }
     }
 
     Ok(())
 }
 
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn both_clients_can_be_constructed() {
-        // This test ensures both backends are valid and eliminates
-        // "never constructed" warnings for OllamaClient
-        let _openrouter = OpenRouterClient;
-        let _ollama = ollama::OllamaClient;
-    }
-}

@@ -17,6 +17,18 @@ pub enum Commands {
         #[arg(short, long)]
         model: Option<String>,
     },
+
+    Embed {
+        text: String, // The text we want to turn into numbers
+    },
+
+    Ingest {
+        file_path: String,
+        #[arg(short, long, default_value = "embeddings.json")]
+        output: String,
+    },
+
+    Bench,
 }
 
 pub fn parse_commands() -> Result<Cli, Box<dyn std::error::Error>> {

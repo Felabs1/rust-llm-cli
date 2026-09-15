@@ -1,9 +1,8 @@
-#![allow(dead_code)]
 use crate::client::LanguageModel; // ← ONLY the trait. Not OpenRouterClient.
 use crate::models::{Message, Usage};
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::Read;
 use std::time::Instant;
 
@@ -40,7 +39,7 @@ impl LanguageModel for OllamaClient {
         });
 
         let start_time = Instant::now();
-        let first_token_time: Option<Instant> = None;
+        let mut first_token_time: Option<Instant> = None;
 
         let mut response = client
             .post("http://localhost:11434/api/chat")
@@ -120,4 +119,34 @@ impl LanguageModel for OllamaClient {
 
         Ok((full_response, usage))
     }
+}
+
+pub fn get_local_embedding(
+    model: &str,
+    text: &str,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    let client = Client::new();
+
+    let payload = json!({
+        "model": model,
+        "prompt": text
+    });
+
+    let response = client
+        .post("http://localhost:11434/api/embeddings")
+        .json(&payload)
+        .send()?
+        .error_for_status()?;
+
+    // Ollama returns {"embedding": [0.1, 0.2, ...]}
+    let parsed: Value = response.json()?;
+
+    let embedding_vector: Vec<f32> = parsed["embedding"]
+        .as_array()
+        .ok_or("No embedding array in Ollama response")?
+        .iter()
+        .filter_map(|v| v.as_f64().map(|f| f as f32))
+        .collect();
+
+    Ok(embedding_vector)
 }
