@@ -37,9 +37,21 @@ pub enum Commands {
     Index {
         #[arg(short, long, default_value = "embeddings.json")]
         file: String,
-    }
+    },
 
-
+    Search {
+        query: String,
+        #[arg(short, long, default_value_t = 3)]
+        limit: usize,
+        #[arg(short, long)]
+        keyword: Option<String>,
+    },
+    Pipeline {
+        /// Path to the text file to process
+        file: String,
+        #[arg(short, long, default_value = "my_notes")]
+        collection: String,
+    },
 }
 
 pub fn parse_commands() -> Result<Cli, Box<dyn std::error::Error>> {

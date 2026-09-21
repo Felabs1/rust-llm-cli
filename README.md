@@ -2,7 +2,7 @@
 
 A modular command-line LLM client written in Rust, backed by either the [OpenRouter](https://openrouter.ai) API or a local [Ollama](https://ollama.com) instance.
 
-Alongside the chat client it ships an embeddings toolkit: generate a vector for a string, ingest a text file into paragraph chunks, benchmark remote versus local embedding models by cosine similarity, and persist the results to a [Qdrant](https://qdrant.tech) vector store running in Docker.
+Alongside the chat client it ships a retrieval toolkit: generate a vector for a string, ingest a text file into paragraph chunks, benchmark remote versus local embedding models by cosine similarity, persist the results to a [Qdrant](https://qdrant.tech) vector store running in Docker, and query that store by semantic similarity. `pipeline` runs read → chunk → embed → index as a single command.
 
 ## Architecture
 
@@ -12,7 +12,8 @@ graph TB
     main --> cmdmod[commands.rs]
     main --> chatloop[Chat Loop]
     main --> embcmds["embed · ingest · bench"]
-    main --> vdbcmds["setup · index"]
+    main --> vdbcmds["setup · index · search"]
+    main --> pipecmd["pipeline"]
 
     config --> envfile[".env"]
     config --> pricingfile["pricing.json"]
@@ -35,13 +36,25 @@ graph TB
     benchfn --> localemb["ollama.rs · get_local_embedding()"]
     localemb --> ollamaembapi["localhost:11434/api/embeddings · nomic-embed-text"]
 
-    vdbcmds --> qdrantmod["qdrant.rs"]
+    vdbcmds --> qdrantmod["qdrant.rs · QdrantClient"]
     qdrantmod --> createcoll["create_collection()"]
+    qdrantmod --> insertfile["insert_points_from_file()"]
     qdrantmod --> insertpts["insert_points()"]
-    embjson --> insertpts
+    qdrantmod --> searchpts["search_points()"]
+    embjson --> insertfile
+    insertfile --> insertpts
     createcoll --> qdrantapi["localhost:6333 · Qdrant REST API"]
     insertpts --> qdrantapi
+    searchpts --> qdrantapi
     qdrantapi --> compose["docker-compose.yml · qdrant/qdrant"]
+
+    pipecmd --> pipemod["pipeline.rs · run_pipeline()"]
+    pipemod --> getemb
+    pipemod --> createcoll
+    pipemod --> insertpts
+
+    searchpts --> getemb
+    retrmod["retriever.rs · Retriever trait"] -. implemented for QdrantClient, not yet called .-> qdrantmod
 
     chatloop --> readprompt
     chatloop --> specials["undo · redo · cache-test · exit"]
@@ -100,7 +113,11 @@ graph TB
     subgraph vectorstore [Vector Store]
         qdrantmod
         createcoll
+        insertfile
         insertpts
+        searchpts
+        retrmod
+        pipemod
         qdrantapi
         compose
     end
@@ -124,7 +141,9 @@ graph TB
 | `client.rs` | `LanguageModel` trait + `OpenRouterClient` |
 | `ollama.rs` | `OllamaClient` implementing `LanguageModel`, plus `get_local_embedding()` |
 | `embeddings.rs` | Embedding generation, paragraph chunking, file ingestion, cosine similarity, model benchmarking |
-| `qdrant.rs` | Qdrant REST client: `create_collection()` and `insert_points()` |
+| `qdrant.rs` | `QdrantClient` REST wrapper: `create_collection()`, `insert_points()`, `insert_points_from_file()`, plus the free `search_points()` |
+| `retriever.rs` | Backend-agnostic `Retriever` trait and `RetrievalResult`, implemented for `QdrantClient` |
+| `pipeline.rs` | `run_pipeline()` — read, chunk, embed, create the collection, and index in one pass |
 | `cache.rs` | In-memory response cache keyed by conversation hash |
 | `cost.rs` | Cost estimation from token counts or provider usage |
 | `history.rs` | Token estimation (`len/4`) + history truncation |
@@ -170,7 +189,7 @@ ollama pull llama3.2
 
 ### Qdrant
 
-`setup` and `index` talk to Qdrant's REST API on `http://localhost:6333`. `docker-compose.yml` defines the server:
+`setup`, `index`, `search`, and `pipeline` talk to Qdrant's REST API on `http://localhost:6333`. `docker-compose.yml` defines the server:
 
 ```bash
 docker compose up -d
@@ -190,7 +209,7 @@ docker compose up -d
 
 ### Shared startup requirements
 
-`main()` loads `.env`, `pricing.json`, and the system prompt before dispatching any subcommand, so `embed`, `ingest`, `bench`, `setup`, and `index` all still require `OPENROUTER_API_KEY` plus both files to be present even though they never send a chat request. `setup` and `index` additionally need Qdrant reachable on port `6333`.
+`main()` loads `.env`, `pricing.json`, and the system prompt before dispatching any subcommand, so `embed`, `ingest`, `bench`, `setup`, `index`, `search`, and `pipeline` all still require `OPENROUTER_API_KEY` plus both files to be present even though they never send a chat request. `setup`, `index`, `search`, and `pipeline` additionally need Qdrant reachable on port `6333`.
 
 ## Usage
 
@@ -328,12 +347,16 @@ Scoring uses `cosine_similarity()`, which returns `0.0` for mismatched-length or
 
 ## Vector store
 
-`ingest` leaves embeddings in a JSON file. `setup` and `index` push them into Qdrant, where they persist across runs:
+`ingest` leaves embeddings in a JSON file. `setup` and `index` push them into Qdrant, where they persist across runs, and `search` queries them back:
 
 ```
-ingest <file>  →  embeddings.json  →  index  →  Qdrant collection
+ingest <file>  →  embeddings.json  →  index  →  Qdrant collection  →  search <query>
                      setup <name> creates the collection first
+
+pipeline <file>  →  chunk → embed → create collection → index    (all of the above, no JSON file)
 ```
+
+Every Qdrant call goes through `QdrantClient`, a thin struct holding the `base_url` (`http://localhost:6333`, hardcoded in `QdrantClient::new()`).
 
 ### 1. Create a collection
 
@@ -343,10 +366,12 @@ cargo run -- setup my_notes
 
 ```
 🚀 Setting up Qdrant collection: my_notes
-✅ Collection 'my_notes' created successfully.
+✅ Collection 'my_notes' ready.
 ```
 
 `create_collection()` issues `PUT /collections/{name}` with `{"vectors": {"size": 1536, "distance": "Cosine"}}`. The size is hardcoded to **1536** at the call site in `main.rs` to match `text-embedding-3-small`; indexing vectors from a different embedding model means changing that value.
+
+The call is idempotent: a `409 Conflict` from an existing collection is treated as success alongside `200`/`201`, so re-running `setup` (or letting `pipeline` create the collection every run) is safe. Any other status is returned as an error.
 
 ### 2. Index the embeddings
 
@@ -356,12 +381,10 @@ cargo run -- index --file notes.json
 ```
 
 ```
-📖 Reading embeddings from embeddings.json...
-🚀 Pushing 3 points to Qdrant...
-✅ Successfully indexed 3 points into 'my_notes'
+✅ Indexed 3 points into 'my_notes'.
 ```
 
-It reads `embeddings.json` by default (`-f` / `--file` to override) and expects the `{ data, vector }` shape that `ingest` writes. Each entry becomes one point:
+`insert_points_from_file()` reads `embeddings.json` by default (`-f` / `--file` to override), expects the `{ data, vector }` shape that `ingest` writes, and hands the pairs to `insert_points()`. Each entry becomes one point:
 
 ```json
 { "id": 1, "vector": [-0.0070724487, 0.03201294, ...], "payload": { "text": "Rust is a multi-paradigm..." } }
@@ -372,9 +395,74 @@ Two behaviours worth knowing:
 - The target collection is **hardcoded to `my_notes`** in `main.rs`. `index` ignores whatever name you gave `setup`, so the default path only works if you ran `cargo run -- setup my_notes`.
 - IDs are the 1-based position of the chunk in the file, and `PUT /collections/{name}/points` upserts. Indexing a different file into the same collection silently overwrites the points whose IDs collide.
 
+### 3. Search the collection
+
+```bash
+cargo run -- search "how does ownership work?"
+cargo run -- search "ownership" --limit 5
+cargo run -- search "ownership" --keyword rust
+```
+
+```
+Searching for: "how does ownership work?"
+Query embedded (1536 dimensions)
+
+Top 3 results:
+
+  1. [Score: 0.424]
+     Rust's ownership system ensures memory safety without a garbage collector. Each value has one owner, and when the owner goes out of scope, the value is dropped.
+
+  2. [Score: 0.210]
+     CAP theorem states that a distributed system cannot simultaneously guarantee consistency, availability, and partition tolerance under a network partition. …
+
+  3. [Score: 0.189]
+     A process is an independent running program with its own memory space. …
+```
+
+The query is embedded with the same `openai/text-embedding-3-small` model used for indexing, then posted to `POST /collections/{name}/points/search` with `with_payload: true`. Results come back sorted by cosine score, highest first.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `-l` / `--limit` | `3` | How many points to return |
+| `-k` / `--keyword` | none | Adds a Qdrant payload filter on the `text` field |
+
+`--keyword` attaches a `must` / `match` full-text condition, so only chunks containing that word are scored at all. Matching is case-insensitive, and it works without declaring a payload index — Qdrant falls back to scanning when the field is unindexed. On a large collection, add a full-text index on `text` to keep filtered queries fast.
+
+Two things to know about the current wiring:
+
+- Like `index`, the collection is **hardcoded to `my_notes`** in `main.rs`. Searching a collection you created under another name is not reachable from the CLI yet.
+- `retriever.rs` defines a backend-agnostic `Retriever` trait and implements it for `QdrantClient`, but the `search` arm calls the free `qdrant::search_points()` directly. The boxed trait object is constructed and dropped unused (`warning: unused variable: retriever`), so the abstraction is in place but not yet on the call path.
+
+### One command for the whole path: `pipeline`
+
+```bash
+cargo run -- pipeline test_notes.txt
+cargo run -- pipeline test_notes.txt --collection my_docs
+```
+
+```
+Reading file: test_notes.txt
+Found 3 chunks to embed.
+  Embedding chunk 1/3...
+  Embedding chunk 2/3...
+  Embedding chunk 3/3...
+📦 Setting up Qdrant collection: my_notes
+✅ Collection 'my_notes' ready.
+🚀 Indexing 3 points into Qdrant...
+✅ Indexed 3 points into 'my_notes'.
+✅ Pipeline complete! 3 chunks are now searchable.
+
+Done! 3 chunks indexed into 'my_notes'.
+   Try: cargo run -- search "your question here"
+```
+
+`run_pipeline()` does `ingest` + `setup` + `index` in one pass and never writes `embeddings.json` — the vectors go straight from memory into Qdrant. It splits on blank lines exactly as `ingest` does, creates the collection at 1536 dimensions (idempotent, so re-running is fine), and upserts with the same 1-based positional IDs.
+
+`-c` / `--collection` chooses the target, defaulting to `my_notes`. Because `search` is hardcoded to `my_notes`, indexing anywhere else leaves the data unsearchable from the CLI.
+
 ### Inspecting a collection
 
-There is no `search` subcommand yet — the CLI can write to Qdrant but not query it. Use the REST API directly:
+To look at raw points, or at a collection `search` cannot reach, use the REST API directly:
 
 ```bash
 # config, status, and point count
@@ -401,6 +489,11 @@ curl -X POST http://localhost:6333/collections/my_notes/points/scroll \
 | `setup <name>` | Create a Qdrant collection — 1536 dimensions, cosine distance |
 | `index` | Push `embeddings.json` into the `my_notes` collection |
 | `index -f <path>` | Same, reading a different embeddings file |
+| `search <query>` | Embed the query and return the closest chunks from `my_notes` |
+| `search <query> -l <n>` | Same, returning `n` results instead of 3 |
+| `search <query> -k <word>` | Same, restricted to chunks whose text contains `word` |
+| `pipeline <file>` | Read, chunk, embed, create the collection, and index — in one command |
+| `pipeline <file> -c <name>` | Same, targeting a collection other than `my_notes` |
 
 Global flag: `--system-prompt <path>`, default `system_prompt.txt`. It belongs to the top-level command, so it must precede the subcommand.
 
@@ -433,6 +526,10 @@ Anything else is sent to the model as the next turn — after passing the inject
 - **Cosine similarity** — `NaN`-safe scoring that returns `0.0` on mismatched or zero-magnitude vectors
 - **Remote vs local benchmarking** — `bench` ranks the same documents with OpenRouter and Ollama `nomic-embed-text` side by side
 - **Persistent vector store** — Qdrant runs from `docker-compose.yml` behind a named volume; `setup` creates a cosine-distance collection and `index` upserts the ingested chunks into it
+- **Semantic search** — `search` embeds the query and ranks stored chunks by cosine score, with `--limit` and an optional `--keyword` full-text filter
+- **One-command ingestion** — `pipeline` reads, chunks, embeds, creates the collection, and indexes without an intermediate JSON file
+- **Idempotent collection setup** — `create_collection()` accepts `409 Conflict` as success, so repeated runs do not fail
+- **Swappable vector backend** — `Retriever` trait and `RetrievalResult` keep the search contract independent of Qdrant (implemented, not yet on the call path)
 
 ## Testing
 
@@ -442,7 +539,7 @@ cargo test
 
 18 unit tests covering token estimation and truncation (`history`), cost calculation (`cost`), the injection guardrail (`safety`), cache hits with a mock client (`cache`), and cosine similarity plus the generic `Embedding<T>` (`embeddings`).
 
-The network-facing code — `client`, `ollama`, the embedding API calls, and `qdrant` — has no test coverage; only `cache` is exercised offline, via a mock `LanguageModel`.
+The network-facing code — `client`, `ollama`, the embedding API calls, `qdrant`, `retriever`, and `pipeline` — has no test coverage; only `cache` is exercised offline, via a mock `LanguageModel`. The `Retriever` trait is the natural seam for a fake backend when those tests get written.
 
 ## Layout
 
@@ -461,7 +558,9 @@ llm-cli/
     ├── client.rs        # LanguageModel trait + OpenRouterClient
     ├── ollama.rs        # OllamaClient + get_local_embedding()
     ├── embeddings.rs    # embed, chunk, ingest, cosine similarity, bench
-    ├── qdrant.rs        # create_collection() + insert_points()
+    ├── qdrant.rs        # QdrantClient: create, insert, search
+    ├── retriever.rs     # Retriever trait + RetrievalResult
+    ├── pipeline.rs      # run_pipeline(): read → chunk → embed → index
     ├── cache.rs         # ask_with_cache<M>()
     ├── cost.rs          # estimate / calculate cost
     ├── history.rs       # token estimate + truncate

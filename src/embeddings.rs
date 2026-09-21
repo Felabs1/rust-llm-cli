@@ -1,8 +1,8 @@
+use crate::ollama;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use crate::ollama;
 
 // 1. A struct to bundle the text and its numbers together
 // The <T> tells Rust: "This struct holds some type T, which we will define later."

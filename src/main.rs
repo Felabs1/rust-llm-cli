@@ -7,8 +7,10 @@ mod embeddings;
 mod history;
 mod models;
 mod ollama;
-mod safety;
+mod pipeline;
 mod qdrant;
+mod retriever;
+mod safety;
 
 use cache::{ResponseCache, ask_with_cache};
 use client::{LanguageModel, OpenRouterClient};
@@ -241,23 +243,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Bicycles also have tires that can go flat, requiring a patch kit.", // Somewhat relevant
                 "To change a tire, use a jack to lift the car and a lug wrench to remove the nuts.", // Highly relevant
             ];
-            
+
             embeddings::benchmark_models(&api_key, query, &docs)?;
         }
 
-        commands::Commands::Setup {name} =>  {
+        commands::Commands::Setup { name } => {
             println!("🚀 Setting up Qdrant collection: {}", name);
             // Call the function we wrote in qdrant.rs!
             // We pass the name, and 1536 (the size of OpenRouter's embeddings)
-            qdrant::create_collection(&name, 1536)?;
+            let client = qdrant::QdrantClient::new();
+            client.create_collection(&name, 1536)?;
         }
 
         commands::Commands::Index { file } => {
-            qdrant::insert_points(&file, "my_notes")?;
+            let client = qdrant::QdrantClient::new();
+            client.insert_points_from_file("my_notes", &file)?;
+        }
+
+        commands::Commands::Search {
+            query,
+            limit,
+            keyword,
+        } => {
+            println!("Searching for: \"{}\"", query);
+
+            if let Some(ref kw) = keyword {
+                println!("🔎 Keyword filter: \"{}\"", kw);
+            }
+
+            // Step 1: Embed the query using OpenRouter
+            let api_key = config::api_key()?;
+            let query_vector = embeddings::get_embedding(&api_key, &query)?;
+            println!("Query embedded ({} dimensions)", query_vector.len());
+
+            // Step 2: Create a trait object.
+            // Box<dyn Retriever> means "some type that implements Retriever,
+            // allocated on the heap. I don't care which type it is, I just
+            // care that it has a search method."
+            let retriever: Box<dyn retriever::Retriever> = Box::new(qdrant::QdrantClient::new());
+
+            let keyword_ref = keyword.as_deref();
+            let results = qdrant::search_points("my_notes", query_vector, limit, keyword_ref)?;
+
+            if results.is_empty() {
+                println!("No results found.");
+            } else {
+                println!("\nTop {} results:\n", results.len());
+                for (i, result) in results.iter().enumerate() {
+                    println!("  {}. [Score: {:.3}]", i + 1, result.score);
+                    println!("     {}\n", result.payload.text);
+                }
+            }
+        }
+
+        commands::Commands::Pipeline { file, collection } => {
+            let api_key = config::api_key()?;
+            let count = pipeline::run_pipeline(&file, &collection, &api_key)?;
+
+            println!("\nDone! {} chunks indexed into '{}'.", count, collection);
+            println!("   Try: cargo run -- search \"your question here\"");
         }
     }
 
     Ok(())
 }
-
-
